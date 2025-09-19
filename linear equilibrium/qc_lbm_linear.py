@@ -49,7 +49,15 @@ class QcLbm:
     @staticmethod
     def GetIqBasedOnDirection(dir: IqDir) -> np.ndarray:
         pass
-    def SefBounceBackBoundaryForCollisionMatrix(self, boundary_type: BoundaryType, u_0: float, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
+    def ReplacePeriodicVariablesForCollisionMatrix(self, boundary_type: BoundaryType,\
+        replacement_matrix: np.ndarray, collision_matrix: np.ndarray):
+        pass
+    def SetBounceBackBoundaryForCollisionMatrix(self, boundary_type: BoundaryType, u_0: float,\
+        boundary_matrix : np.ndarray, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
+        pass
+    def ComputeCollisionMatrix(self, omega: float) -> np.ndarray:
+        pass
+    def AddForceTermToCollisionMatrix(self, force: np.ndarray, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
         pass
     def GetLatticeVelocities(self) -> np.ndarray:
         pass
@@ -144,7 +152,7 @@ class QcLbm:
         U_ext = np.eye(2**num_qubit, dtype=complex)
         U_ext[:shape[1], :shape[0]] = U
 
-        # LCU for Sigma
+        # LCU
         B1 = np.pad(Sigma + 1j * np.sqrt(1 - np.square(Sigma)), (0, num_offset), mode='constant', constant_values=1)
         B2 = np.pad (Sigma - 1j * np.sqrt(1 - np.square(Sigma)), (0, num_offset), mode='constant', constant_values=1)
 
@@ -165,12 +173,10 @@ class QcLbm:
             for j, bit in enumerate(reversed(binary)):
                 if bit == '0':
                     qc.x(q_v[j])
-            # Controlled phase for B1 (ancilla = |0>)
             theta1 = np.angle(B1[i])
             qc.x(q_ancilla[0])
             qc.mcp(theta1, q_v[:], q_ancilla[0])
             qc.x(q_ancilla[0])
-            # Controlled phase for B2 (ancilla = |1>)
             theta2 = np.angle(B2[i])
             qc.mcp(theta2, q_v[:], q_ancilla[0])
             for j, bit in enumerate(reversed(binary)):
@@ -211,17 +217,61 @@ class QcLbmD2Q9 (QcLbm):
         else:
             raise ValueError("Invalid direction.")
         
-    def SefBounceBackBoundaryForCollisionMatrix(self, boundary_type: BoundaryType, index_u: int, u_0: float, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
+    def ReplacePeriodicVariablesForCollisionMatrix(self, boundary_type: BoundaryType,\
+        replacement_matrix: np.ndarray, collision_matrix: np.ndarray):
+        if boundary_type == BoundaryType.x_min:
+            index_boundary_req = self.GetIqBasedOnDirection(IqDir.x_pos)
+            ix_req = 0
+            ix_anti = self.nx - 1
+        elif boundary_type == BoundaryType.x_max:
+            index_boundary_req = self.GetIqBasedOnDirection(IqDir.x_neg)
+            ix_req = self.nx - 1
+            ix_anti = 0
+        elif boundary_type == BoundaryType.y_min:
+            index_boundary_req = self.GetIqBasedOnDirection(IqDir.y_pos)
+            iy_req = 0
+            iy_anti = self.ny - 1
+        elif boundary_type == BoundaryType.y_max:
+            index_boundary_req = self.GetIqBasedOnDirection(IqDir.y_neg)
+            iy_req = self.ny - 1
+            iy_anti = 0
+        else:
+            raise ValueError("Invalid boundary type.")
+        
+        if boundary_type == BoundaryType.y_max or boundary_type == BoundaryType.y_min:
+            for ix in range(self.nx):
+                node_index_req = iy_req * self.nx * self.num_max_variables + ix * self.num_max_variables
+                for index in range(len(index_boundary_req)):
+                    node_index_anti = iy_anti * self.nx * self.num_max_variables\
+                        + (ix + self.cx[index_boundary_req[index]]) % self.nx * self.num_max_variables
+                    for iv in range(self.num_max_variables):
+                        collision_matrix[node_index_anti + index_boundary_req[index], node_index_req + iv] =\
+                            replacement_matrix[node_index_req + index_boundary_req[index], node_index_req + iv]
+                        collision_matrix[node_index_anti + index_boundary_req[index], node_index_anti + iv] = 0
+
+        elif boundary_type == BoundaryType.x_max or boundary_type == BoundaryType.x_min:
+            for iy in range(self.ny):
+                node_index_req = iy * self.nx * self.num_max_variables + ix_req * self.num_max_variables
+                for index in range(len(index_boundary_req)):
+                    node_index_anti = ((iy + self.cy[index_boundary_req[index]]) % self.ny) * self.nx * self.num_max_variables\
+                        + ix_anti * self.num_max_variables
+                    for iv in range(self.num_max_variables):
+                        collision_matrix[node_index_anti + index_boundary_req[index], node_index_req + iv] =\
+                            replacement_matrix[node_index_req + index_boundary_req[index], node_index_req + iv]
+                        collision_matrix[node_index_anti + index_boundary_req[index], node_index_anti + iv] = 0
+            
+    def SetBounceBackBoundaryForCollisionMatrix(self, boundary_type: BoundaryType, index_u: int, u_0: float,\
+        boundary_matrix : np.ndarray, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
+        if (boundary_matrix.shape != collision_matrix.shape):
+            raise ValueError("Boundary matrix must have the same shape as collision matrix.")
         if boundary_type == BoundaryType.y_min:
             index_boundary_req = self.GetIqBasedOnDirection(IqDir.y_pos)
             index_boundary_anti = self.GetIqBasedOnDirection(IqDir.y_neg)
             iy_req = 0
-            iy_anti = self.ny - 1
         if boundary_type == BoundaryType.y_max:
             index_boundary_req = self.GetIqBasedOnDirection(IqDir.y_neg)
             index_boundary_anti = self.GetIqBasedOnDirection(IqDir.y_pos)
             iy_req = self.ny - 1
-            iy_anti = 0
 
         if boundary_type == BoundaryType.y_max or boundary_type == BoundaryType.y_min:
             for ix in range(self.nx):
@@ -230,15 +280,11 @@ class QcLbmD2Q9 (QcLbm):
                     initial_field_flattened[node_index_req + index_u] = u_0
                     collision_matrix[node_index_req + index_u, node_index_req + index_u] = 1
                 for index in range(len(index_boundary_req)):
-                    node_index_pre = iy_anti * self.nx * self.num_max_variables + (ix + self.cx[index_boundary_req[index]]) % self.nx * self.num_max_variables
-                    for iq in range(self.nq):
-                        collision_matrix[node_index_pre + index_boundary_req[index], node_index_pre + iq] = 0
-                        collision_matrix[node_index_pre + index_boundary_req[index], node_index_req + iq] = \
-                            self.omega * self.wi[index_boundary_anti[index]]* (1 + 3*self.cx[index_boundary_anti[index]]*self.cx[iq] + 3*self.cy[index_boundary_anti[index]]*self.cy[iq])      
-                        if index_boundary_anti[index] == iq:
-                            collision_matrix[node_index_pre  + index_boundary_req[index], node_index_req + iq] += (1 - self.omega)
+                    for iv in range(self.num_max_variables):
+                        boundary_matrix[node_index_req + index_boundary_req[index], node_index_req + iv] = \
+                            collision_matrix[node_index_req + index_boundary_anti[index], node_index_req + iv]
                     if np.fabs(u_0) > kEps:
-                        collision_matrix[node_index_pre  + index_boundary_req[index], node_index_req + index_u] = \
+                        boundary_matrix[node_index_req  + index_boundary_req[index], node_index_req + index_u] = \
                             -6*self.wi[index_boundary_anti[index]]*self.cx[index_boundary_anti[index]]
 
     def ComputeCollisionMatrix(self, omega: float) -> np.ndarray:
@@ -249,10 +295,29 @@ class QcLbmD2Q9 (QcLbm):
                 node_index = j * self.nx * self.num_max_variables + i * self.num_max_variables
                 for jq in range(self.nq):
                     for iq in range(self.nq):
-                        collision_matrix[node_index + jq, node_index + iq] = omega * self.wi[jq]* (1 + 3*self.cx[jq]*self.cx[iq] + 3*self.cy[jq]*self.cy[iq])
+                        collision_matrix[node_index + jq, node_index + iq] =\
+                            omega * self.wi[jq]* (1 + 3*self.cx[jq]*self.cx[iq] + 3*self.cy[jq]*self.cy[iq])
                         if jq == iq:
                             collision_matrix[node_index + jq, node_index + iq] += (1 - omega)
         return collision_matrix
+    
+    def AddForceTermToCollisionMatrix(self, index_f: int, force: np.ndarray, collision_matrix: np.ndarray, initial_field_flattened: np.ndarray):
+        if force.shape != (2,):
+            raise ValueError("Force must be a 2D vector.")
+        if (index_f < 0) or (index_f + 1 >= self.num_max_variables):
+            raise ValueError("Force index is out of range.")
+        for j in range(self.ny):
+            for i in range(self.nx):
+                node_index = j * self.nx * self.num_max_variables + i * self.num_max_variables
+                initial_field_flattened[node_index + index_f] = force[0]
+                initial_field_flattened[node_index + index_f + 1] = force[1]
+                for iq in range(self.nq):
+                    collision_matrix[node_index + iq, node_index  + index_f] = 3 * self.wi[iq] * self.cx[iq]
+                    collision_matrix[node_index + iq, node_index  + index_f + 1] = 3 * self.wi[iq] * self.cy[iq]
+
+                collision_matrix[node_index + index_f, node_index + index_f] = 1
+                collision_matrix[node_index + index_f + 1, node_index + index_f + 1] = 1
+
 
     def FlattenInitialField(self, initial_field: np.ndarray) -> np.ndarray:
         shape = initial_field.shape
